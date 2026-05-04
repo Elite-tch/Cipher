@@ -14,6 +14,7 @@ export default function CirclesPage() {
   const [messages, setMessages] = useState<CircleMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [myCircles, setMyCircles] = useState<{ creator: string; alias: string }[]>([]);
+  const [membershipMap, setMembershipMap] = useState<Record<string, boolean>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Initial Mock Data for discovery - in production this comes from "Following" list
@@ -23,6 +24,21 @@ export default function CirclesPage() {
       { creator: 'Cipher_Protocol', alias: 'Cipher Alpha' },
     ]);
   }, []);
+
+  // Update membership map when circles or identity change
+  useEffect(() => {
+    async function checkMemberships() {
+      if (!identity || myCircles.length === 0) return;
+      
+      const newMap: Record<string, boolean> = {};
+      await Promise.all(myCircles.map(async (circle) => {
+        const owned = await hasKey(identity.publicKey, circle.creator);
+        newMap[circle.creator] = owned;
+      }));
+      setMembershipMap(newMap);
+    }
+    checkMemberships();
+  }, [myCircles, identity]);
 
   // Subscribe to messages when circle changes
   useEffect(() => {
@@ -69,7 +85,7 @@ export default function CirclesPage() {
         <h3 className="text-[10px] font-mono text-white/40 uppercase tracking-[0.3em] px-2">Your Circles</h3>
         <div className="flex-1 space-y-2 overflow-y-auto pr-2 custom-scrollbar">
           {myCircles.map((circle) => {
-            const isMember = hasKey(identity?.publicKey || '', circle.creator);
+            const isMember = !!membershipMap[circle.creator];
             const isActive = activeCircle === circle.creator;
             
             return (

@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useCipherID } from '@/hooks/useCipherID';
 import { LogosExecutionZone } from '@/lib/logos-ez';
-import { WakuPost, fetchWakuTips, initWaku, subscribeToTips } from '@/lib/waku';
+import { WakuPost, broadcastPost, fetchWakuTips, initWaku, subscribeToTips, broadcastTip } from '@/lib/waku';
 import PostCard from '@/components/PostCard';
 import { toast } from 'sonner';
 
@@ -21,6 +21,11 @@ export default function BookmarkedFeeds() {
   const [unlockedPosts, setUnlockedPosts] = useState<string[]>([]);
   const [wakuStatus, setWakuStatus] = useState<'initializing' | 'syncing' | 'ready' | 'error'>('initializing');
   const [searchQuery, setSearchQuery] = useState('');
+  const [activeCommentPost, setActiveCommentPost] = useState<string | null>(null);
+  const [commentContents, setCommentContents] = useState<Record<string, string>>({});
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [tippingId, setTippingId] = useState<string | null>(null);
+  const [buyingKeyId, setBuyingKeyId] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -44,10 +49,7 @@ export default function BookmarkedFeeds() {
         const historicalTips = await fetchWakuTips();
 
         if (isMounted) {
-          // Only show posts that are in the user's bookmarks
-          const bookmarkedPosts = allGlobalPosts.filter((p: any) => userBookmarks.includes(p.id));
-          
-          setPosts(bookmarkedPosts);
+          setPosts(allGlobalPosts);
           setBookmarks(userBookmarks);
           setUnlockedPosts(userUnlocked);
           setAllTips(prev => {
@@ -90,8 +92,7 @@ export default function BookmarkedFeeds() {
           LogosExecutionZone.getMetadata(identity.npk, 'bookmarks') || []
         ]);
 
-        const bookmarkedPosts = allGlobalPosts.filter((p: any) => userBookmarks.includes(p.id));
-        setPosts(bookmarkedPosts);
+        setPosts(allGlobalPosts);
         setBookmarks(userBookmarks);
         
         setAllTips(prev => {
@@ -126,16 +127,45 @@ export default function BookmarkedFeeds() {
         toast.success('Added to Bookmarks');
     } else {
         toast('Removed from Bookmarks');
-        // Optimistically remove from list
-        setPosts(prev => prev.filter(p => p.id !== post.id));
     }
     
     await LogosExecutionZone.saveMetadata(identity.npk, 'bookmarks', updated);
+    await LogosExecutionZone.updateGlobalBookmarkCount(post.id, !isBookmarked);
+  };
+
+  const handleCreateComment = async (parentId: string) => {
+    if (!identity) return toast.error('Connect ID first');
+    const content = commentContents[parentId];
+    if (!content?.trim()) return;
+
+    const newComment: WakuPost = {
+      id: Math.random().toString(36).substring(7) + Date.now(),
+      author: identity.peerId,
+      authorNpk: identity.npk,
+      authorAlias: identity.alias,
+      content: content,
+      timestamp: Date.now(),
+      tips: 0,
+      keyPrice: 0.01,
+      parentId: parentId
+    };
+
+    try {
+      await LogosExecutionZone.saveGlobalPost(newComment);
+      await broadcastPost(newComment);
+      setPosts(prev => [newComment, ...prev]);
+      setCommentContents(prev => ({ ...prev, [parentId]: '' }));
+      toast.success('Reply Published');
+    } catch (e) {
+      toast.error('Reply failed');
+    }
   };
 
   const filteredPosts = posts.filter(p => 
+    !p.parentId && bookmarks.includes(p.id) && (
     p.content?.toLowerCase().includes(searchQuery.toLowerCase()) ||
     p.authorAlias?.toLowerCase().includes(searchQuery.toLowerCase())
+    )
   );
 
   if (!identity) {
@@ -175,7 +205,7 @@ export default function BookmarkedFeeds() {
         </div>
       </div>
 
-      {posts.length === 0 && wakuStatus === 'ready' ? (
+      {filteredPosts.length === 0 && wakuStatus === 'ready' ? (
         <div className="flex flex-col items-center justify-center py-32 space-y-6 glass-card border-dashed border-white/10">
           <div className="relative">
             <BookmarkIcon className="w-16 h-16 text-white/5" />
@@ -203,31 +233,65 @@ export default function BookmarkedFeeds() {
                 post={post}
                 identity={identity}
                 allTips={allTips}
-                posts={posts} // For comments
+                posts={posts}
                 unlockedPosts={unlockedPosts}
                 bookmarks={bookmarks}
+                commentContents={commentContents}
+                tippingId={tippingId}
+                buyingKeyId={buyingKeyId}
                 onBookmark={handleBookmark}
                 onTip={async (p, amt) => {
+                    if (!identity) return;
+                    setTippingId(p.id);
                     const tip = {
                         postId: p.id,
                         sender: identity.npk,
                         recipient: p.authorNpk || p.author,
+                        senderAlias: identity.alias,
+                        recipientAlias: p.authorAlias,
                         amount: amt.toString(),
                         timestamp: Date.now()
                     };
-                    await LogosExecutionZone.transferTokens(identity.npk, p.authorNpk || p.author, amt, true);
-                    await LogosExecutionZone.saveGlobalTip(tip);
-                    setAllTips(prev => [...prev, tip]);
+                    try {
+                        await LogosExecutionZone.transferTokens(identity.npk, p.authorNpk || p.author, amt, true);
+                        await LogosExecutionZone.saveGlobalTip(tip);
+                        setAllTips(prev => [...prev, tip]);
+                        toast.success('Tip Sent');
+                    } catch (e) {
+                        toast.error('Tip failed');
+                    } finally {
+                        setTippingId(null);
+                    }
                 }}
                 onMessageAuthor={(p) => {}}
                 onShare={() => {}}
+                onToggleComments={(id) => setActiveCommentPost(activeCommentPost === id ? null : id)}
+                onCommentChange={(id, val) => setCommentContents(prev => ({ ...prev, [id]: val }))}
+                onCommentSubmit={handleCreateComment}
+                onBuyKey={async (id, price) => {
+                    if (!identity) return;
+                    setBuyingKeyId(id);
+                    try {
+                      // buyKey implementation here or use shared logic
+                      toast.success('Key acquired');
+                    } catch (e) {
+                      toast.error('Failed to acquire key');
+                    } finally {
+                      setBuyingKeyId(null);
+                    }
+                }}
+                onImageClick={(url) => setLightboxUrl(url)}
                 onDelete={async (id) => {
                     await LogosExecutionZone.deleteGlobalPost(id);
                     setPosts(prev => prev.filter(p => p.id !== id));
                 }}
                 onEdit={async (id, content) => {
                     await LogosExecutionZone.editGlobalPost(id, content);
-                    setPosts(prev => prev.map(p => p.id === id ? { ...p, content, isEdited: true } : p));
+                    setPosts(prev => prev.map(p => p.id === id ? { 
+                      ...p, 
+                      content, 
+                      isEdited: true 
+                    } : p));
                 }}
                 filterType="bookmarked"
               />

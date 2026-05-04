@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import { useCipherID } from '@/hooks/useCipherID';
@@ -23,6 +23,14 @@ import {
 } from 'lucide-react';
 
 export default function ChatsPage() {
+  return (
+    <Suspense fallback={<div className="flex-1 flex items-center justify-center text-white/20 font-mono text-xs uppercase tracking-widest">Initialising Secure Chat...</div>}>
+      <ChatContent />
+    </Suspense>
+  );
+}
+
+function ChatContent() {
   const { identity } = useCipherID();
   const searchParams = useSearchParams();
   const userParam = searchParams.get('user');
@@ -53,7 +61,7 @@ export default function ChatsPage() {
         if (!identity) return;
         try {
           const remoteChats = await LogosExecutionZone.getMetadata(identity.npk, 'active_chats') || [];
-          if (!remoteChats.some((c: any) => c.id === userParam)) {
+          if (userParam && !remoteChats.some((c: any) => c.id === userParam)) {
             const newConv = {
               id: userParam,
               name: `Logos#${userParam.slice(-4).toUpperCase()}`,
@@ -77,6 +85,7 @@ export default function ChatsPage() {
   useEffect(() => {
     if (!identity) return;
     async function loadConversations() {
+      if (!identity) return;
       try {
         const remoteChats = await LogosExecutionZone.getMetadata(identity.npk, 'active_chats') || [];
         setConversations(remoteChats);

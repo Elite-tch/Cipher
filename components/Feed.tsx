@@ -22,7 +22,7 @@ import {
   subscribeToTips,
 } from '@/lib/waku';
 import { decryptData } from '@/lib/encryption';
-import { RotateCwIcon, PlusIcon, Edit3Icon, Trash2Icon } from 'lucide-react';
+import { RotateCwIcon, PlusIcon, Edit3Icon, Trash2Icon, GlobeIcon, SearchIcon } from 'lucide-react';
 import PostCard from '@/components/PostCard';
 
 
@@ -46,6 +46,7 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
 
   const [tippingId, setTippingId] = useState<string | null>(null);
   const [buyingKeyId, setBuyingKeyId] = useState<string | null>(null);
+  const [claimingId, setClaimingId] = useState<string | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
   const [wakuStatus, setWakuStatus] = useState<'connecting' | 'ready' | 'error' | 'syncing'>('connecting');
@@ -161,12 +162,13 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
 
     // LEDGER & WAKU POLLING FALLBACK: Ensures sync even if Waku real-time lags
     const syncInterval = setInterval(async () => {
-      if (!isMounted) return;
+      if (!isMounted || !identity) return;
       try {
-        const [remotePosts, ledgerTips, wakuTips] = await Promise.all([
+        const [remotePosts, ledgerTips, wakuTips, remoteBookmarks] = await Promise.all([
           LogosExecutionZone.getGlobalPosts(),
           LogosExecutionZone.getGlobalTips(),
-          fetchWakuTips()
+          fetchWakuTips(),
+          LogosExecutionZone.getMetadata(identity.npk, 'bookmarks')
         ]);
 
         if (remotePosts.length > 0) {
@@ -177,6 +179,10 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
             });
             return Array.from(mergedMap.values()).sort((a, b) => b.timestamp - a.timestamp);
           });
+        }
+
+        if (remoteBookmarks && isMounted) {
+          setBookmarks(remoteBookmarks);
         }
 
         const allRemoteTips = [...ledgerTips, ...wakuTips];
@@ -201,7 +207,7 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
       unsubscribeTips?.();
       clearInterval(syncInterval);
     };
-  }, []);
+  }, [identity]);
 
   const handleRefresh = async () => {
     setWakuStatus('syncing');
@@ -226,7 +232,7 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
     });
 
     setWakuStatus('ready');
-    toast.success('Feed synchronized with Logos Ledger');
+    toast.success('Feed updated');
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -278,6 +284,7 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
       content: newPostContent,
       timestamp: Date.now(),
       tips: 0,
+      keyPrice: 0.01,
       imageUrl: selectedImages[0] || undefined,
       imageUrls: selectedImages.length > 0 ? selectedImages : undefined,
     };
@@ -319,6 +326,8 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
       postId: post.id,
       sender: identity.npk,
       recipient: recipientAccount,
+      senderAlias: identity.alias,
+      recipientAlias: post.authorAlias,
       amount: amount.toString(),
       timestamp: Date.now(),
     };
@@ -336,82 +345,101 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
   };
 
   const handleDeletePost = async (postId: string) => {
-    if (!confirm('Are you sure you want to delete this transmission from the ledger?')) return;
-    const toastId = toast.loading('Deleting from Logos ledger...');
+    const toastId = toast.loading('Deleting...');
     try {
       await LogosExecutionZone.deleteGlobalPost(postId);
       setPosts(prev => prev.filter(p => p.id !== postId));
-      toast.success('Transmission deleted', { id: toastId });
+      toast.success('Post deleted', { id: toastId });
     } catch (e) {
       toast.error('Failed to delete', { id: toastId });
     }
   };
 
   const handleEditPost = async (postId: string, newContent: string) => {
-    const toastId = toast.loading('Updating ledger...');
+    const toastId = toast.loading('Updating...');
     try {
       await LogosExecutionZone.editGlobalPost(postId, newContent);
-      setPosts(prev => prev.map(p => p.id === postId ? { ...p, content: newContent, isEdited: true } : p));
+      setPosts(prev => prev.map(p => p.id === postId ? { 
+        ...p, 
+        content: newContent, 
+        isEdited: true 
+      } : p));
       setEditingPostId(null);
-      toast.success('Transmission updated', { id: toastId });
+      toast.success('Post updated', { id: toastId });
     } catch (e) {
       toast.error('Failed to update', { id: toastId });
     }
   };
 
-  const handleClaimRedPacket = async (post: WakuPost) => {
-    if (!identity) return alert('Please Connect ID first!');
-    if (post.redPacket?.claims.includes(identity.alias)) return alert('Already claimed!');
+  const handleBookmark = async (post: WakuPost) => {
+    if (!identity) return;
+    const isBookmarked = bookmarks.includes(post.id);
+    const updated = isBookmarked
+      ? bookmarks.filter(id => id !== post.id)
+      : [...bookmarks, post.id];
 
+    setBookmarks(updated);
+    
+    if (filterType === 'bookmarked' && isBookmarked) {
+        setPosts(prev => prev.filter(p => p.id !== post.id));
+    }
+
+    await LogosExecutionZone.saveMetadata(identity.npk, 'bookmarks', updated);
+    await LogosExecutionZone.updateGlobalBookmarkCount(post.id, !isBookmarked);
+    
+    if (isBookmarked) {
+      toast('Removed from Bookmarks');
+    } else {
+      toast.success('Added to Bookmarks');
+    }
+  };
+
+  const handleClaimRedPacket = async (post: WakuPost) => {
+    if (!identity) return toast.error('Connect ID first');
     setClaimingId(post.id);
-    setTimeout(() => {
-      setPosts((prev) => prev.map(p => {
-        if (p.id === post.id && p.redPacket) {
+    
+    setTimeout(async () => {
+      setPosts(prev => prev.map(p => {
+        if (p.id === post.id) {
           return {
             ...p,
-            redPacket: {
-              ...p.redPacket,
-              remainingClaims: p.redPacket.remainingClaims - 1,
-              claims: [...p.redPacket.claims, identity.alias]
-            }
+            redPacket: { ...p.redPacket!, isClaimed: true }
           };
         }
         return p;
       }));
       setClaimingId(null);
-      alert(`🧧 Red Packet Claimed! You received a random share of ${post.redPacket?.totalAmount} LEZ`);
+      alert(`🧧 Red Packet Claimed! You received a random share`);
     }, 1500);
   };
 
-  const handleCreateComment = async (parentId: string) => {
-    if (!identity) return alert('Please Connect ID first!');
-    const content = commentContents[parentId];
-    if (!content?.trim()) return;
+  const handleCreateComment = async (parentId: string, content: string) => {
+    if (!identity) return toast.error('Connect ID first');
+    if (!content.trim()) return;
 
     const newComment: WakuPost = {
       id: Math.random().toString(36).substring(7) + Date.now(),
       author: identity.peerId,
       authorNpk: identity.npk,
       authorAlias: identity.alias,
-      content: content,
+      content,
       timestamp: Date.now(),
+      parentId,
       tips: 0,
-      keyPrice: 0.01,
-      parentId: parentId
+      keyPrice: 0.01
     };
 
-    // Optimistic update
-    setPosts((prev) => {
-      const updated = [newComment, ...prev].sort((a, b) => b.timestamp - a.timestamp);
-      return updated;
+    setPosts(prev => {
+      const updated = [newComment, ...prev];
+      return updated.sort((a, b) => b.timestamp - a.timestamp);
     });
     setCommentContents(prev => ({ ...prev, [parentId]: '' }));
 
-    // Broadcast comment to Logos network
     try {
+      await LogosExecutionZone.saveGlobalPost(newComment);
       await broadcastPost(newComment);
     } catch (err) {
-      console.error('[Logos] Comment broadcast failed:', err);
+      console.error('[Comment] broadcast failed:', err);
     }
   };
 
@@ -419,16 +447,14 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
     if (!identity) return alert('Please Connect ID first!');
     setBuyingKeyId(post.id);
     try {
-      // PRODUCTION: Bonding Curve Purchase on LEZ
       const result = await buyKey(post.author, identity.publicKey);
-
       if (result.success) {
         setUnlockedPosts(prev => {
           const updated = [...prev, post.id];
           if (identity) LogosExecutionZone.saveMetadata(identity.npk, 'unlocked', updated);
           return updated;
         });
-        toast.success('Key acquired via Bonding Curve.');
+        toast.success('Key acquired.');
       }
     } catch (err) {
       toast.error('Could not acquire key.');
@@ -439,7 +465,6 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
 
   const handleMessageAuthor = async (post: WakuPost) => {
     if (!identity) return toast.error('Connect ID first');
-
     try {
       const remoteChats = await LogosExecutionZone.getMetadata(identity.npk, 'active_chats') || [];
       if (!remoteChats.includes(post.author)) {
@@ -450,16 +475,6 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
     } catch (e) {
       router.push(`/dashboard/chats?user=${post.author}`);
     }
-  };
-
-  const handleBookmark = (postId: string) => {
-    setBookmarks(prev => {
-      const updated = prev.includes(postId) ? prev.filter(id => id !== postId) : [...prev, postId];
-      if (identity) {
-        LogosExecutionZone.saveMetadata(identity.npk, 'bookmarks', updated);
-      }
-      return updated;
-    });
   };
 
   const handleShare = async (post: WakuPost) => {
@@ -479,13 +494,13 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
   return (
     <div className="w-full max-w-5xl mx-auto space-y-6">
 
-      {/* Logos Network Status */}
+      {/* Network Status */}
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center gap-2 text-[10px] font-mono tracking-[0.2em] uppercase">
           <span className={`h-1.5 w-1.5 rounded-full ${wakuStatus === 'ready' ? 'bg-success shadow-[0_0_6px_rgba(16,185,129,0.8)]' : wakuStatus === 'error' ? 'bg-red-500' : wakuStatus === 'syncing' ? 'bg-secondary animate-pulse shadow-[0_0_6px_rgba(0,245,255,0.4)]' : 'bg-white/20 animate-pulse'}`} />
           <span className="text-white/70">
             <span className={wakuStatus === 'ready' ? 'text-success font-bold' : wakuStatus === 'error' ? 'text-red-500 font-bold' : 'text-secondary font-bold'}>
-              {wakuStatus === 'ready' ? 'Connected' : wakuStatus === 'syncing' ? 'Syncing Logos...' : wakuStatus === 'error' ? 'Offline' : 'Initializing...'}
+              {wakuStatus === 'ready' ? 'Connected' : wakuStatus === 'syncing' ? 'Syncing...' : wakuStatus === 'error' ? 'Offline' : 'Initializing...'}
             </span>
           </span>
         </div>
@@ -496,11 +511,11 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
           className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[9px] font-mono text-white/50 hover:text-white hover:bg-white/10 transition-all uppercase tracking-widest disabled:opacity-50"
         >
           <RotateCwIcon className={`w-3 h-3 ${wakuStatus === 'syncing' ? 'animate-spin' : ''}`} />
-          Refresh Feeds
+          Refresh Feed
         </button>
       </div>
 
-      {/* Create Feed Toggle (only in My Feeds) */}
+      {/* Create Post Toggle (only in My Posts) */}
       {filterType === 'my' && !showComposer && (
         <button
           onClick={() => setShowComposer(true)}
@@ -509,11 +524,11 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
           <div className="h-12 w-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
             <PlusIcon className="w-6 h-6" />
           </div>
-          <span className="text-xs font-bold text-white/40 uppercase tracking-[0.3em]">Create New Feed</span>
+          <span className="text-xs font-bold text-white/40 uppercase tracking-[0.3em]">Create New Post</span>
         </button>
       )}
 
-      {/* Create Post Area — only show if toggled or in main feed */}
+      {/* Create Post Area */}
       {showComposer && (
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="glass-card p-6 space-y-4 border-primary/20 focus-within:border-primary/40 transition-all duration-500 relative">
           {filterType === 'my' && (
@@ -532,7 +547,7 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
               <textarea
                 value={newPostContent}
                 onChange={(e) => setNewPostContent(e.target.value)}
-                placeholder="Share value, build in public..."
+                placeholder="What's happening?"
                 className="w-full bg-transparent border-none outline-none focus:outline-none focus:ring-0 text-white placeholder:text-white/20 resize-none min-h-[100px] font-body text-sm py-2 no-scrollbar"
               />
               {/* Multi-image preview row */}
@@ -549,18 +564,6 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
                   ))}
                 </div>
               )}
-              {showRedPacketInput && (
-                <div className="flex items-center gap-2 bg-red-500/10 p-2 rounded-lg border border-red-500/20">
-                  <GiftIcon className="w-4 h-4 text-red-500" />
-                  <input
-                    type="number"
-                    value={redPacketAmount}
-                    onChange={(e) => setRedPacketAmount(e.target.value)}
-                    placeholder="Total LEZ amount"
-                    className="bg-transparent border-none outline-none text-xs text-white placeholder:text-red-500/40 w-32"
-                  />
-                </div>
-              )}
             </div>
           </div>
 
@@ -574,22 +577,40 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
                 <ImageIcon className="w-5 h-5" />
                 {selectedImages.length > 0 && <span className="text-[9px] font-mono text-white/40">{selectedImages.length}/4</span>}
               </button>
-              <input type="file" ref={fileInputRef} hidden onChange={handleImageUpload} accept="image/*" multiple />
+              <input type="file" ref={fileInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" multiple />
             </div>
-            <button onClick={handleCreatePost} className="px-6 py-2 rounded-full gradient-primary text-white text-[10px] font-bold tracking-widest hover:scale-105 active:scale-95 shadow-lg">POST</button>
+            <button 
+              onClick={handleCreatePost} 
+              disabled={(!newPostContent.trim() && selectedImages.length === 0) || uploadingImages}
+              className="px-8 py-3 rounded-2xl gradient-primary text-white text-[11px] font-bold tracking-[0.2em] hover:scale-105 transition-all shadow-lg shadow-primary/20 disabled:opacity-50 flex items-center gap-2 group"
+            >
+              {uploadingImages ? 'UPLOADING...' : (
+                <>
+                  POST <SendIcon className="w-3 h-3 -rotate-45 group-hover:translate-x-1 group-hover:-translate-y-1 transition-transform" />
+                </>
+              )}
+            </button>
           </div>
         </motion.div>
       )}
 
-      {/* Empty state while connecting */}
       {wakuStatus === 'connecting' && rootPosts.length === 0 && (
         <div className="text-center py-20 space-y-3">
           <div className="text-4xl animate-pulse">◌</div>
-          <p className="text-white/20 font-mono text-xs uppercase tracking-widest">Connecting to Logos Network...</p>
+          <p className="text-white/20 font-mono text-xs uppercase tracking-widest">Connecting to Network...</p>
         </div>
       )}
 
-      {/* Posts List — sourced entirely from Logos Waku Store */}
+      {filterType === 'bookmarked' && rootPosts.length === 0 && (
+        <div className="text-center space-y-2 py-10">
+          <h3 className="text-sm font-bold text-white uppercase tracking-[0.2em]">Saved empty</h3>
+          <p className="text-[10px] text-white/30 uppercase tracking-widest max-w-[240px] leading-relaxed mx-auto">
+            Your archive is empty. Bookmark posts in the feed to save them here.
+          </p>
+        </div>
+      )}
+
+      {/* Posts List */}
       <AnimatePresence mode="popLayout">
         {rootPosts.map((post) => (
           <PostCard
@@ -604,25 +625,23 @@ export default function Feed({ filterType = 'all' }: { filterType?: 'all' | 'my'
             commentContents={commentContents}
             tippingId={tippingId}
             buyingKeyId={buyingKeyId}
+            onTip={handleTip}
+            onMessageAuthor={handleMessageAuthor}
             onBookmark={handleBookmark}
             onShare={handleShare}
-            onBuyKey={handleBuyKey}
-            onTip={handleTip}
+            onToggleComments={(id) => setActiveCommentPost(activeCommentPost === id ? null : id)}
+            onCommentChange={(id, val) => setCommentContents(prev => ({ ...prev, [id]: val }))}
+            onCommentSubmit={(parentId) => handleCreateComment(parentId, commentContents[parentId])}
+            onImageClick={(url) => setLightboxUrl(url)}
+            onBuyKey={() => handleBuyKey(post)}
             onDelete={handleDeletePost}
             onEdit={handleEditPost}
             filterType={filterType}
-            onMessageAuthor={handleMessageAuthor}
-            onToggleComments={(id: string) => {
-              setActiveCommentPost(activeCommentPost === id ? null : id);
-            }}
-            onCommentChange={(id: string, val: string) => setCommentContents(prev => ({ ...prev, [id]: val }))}
-            onCommentSubmit={handleCreateComment}
-            onImageClick={(url: string) => setLightboxUrl(url)}
           />
         ))}
       </AnimatePresence>
 
-      {/* Lightbox — rendered at Feed level, outside any CSS transform */}
+      {/* Lightbox */}
       <AnimatePresence>
         {lightboxUrl && (
           <motion.div

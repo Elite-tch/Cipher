@@ -55,9 +55,9 @@ export default function DashboardLayout({
   }, [identity, fetchBalance]);
 
   const NAV_ITEMS = [
-    { name: 'Feeds', href: '/dashboard', icon: '◈' },
-    { name: 'My Feeds', href: '/dashboard/my-feeds', icon: '⊞' },
-    { name: 'Bookmarked', href: '/dashboard/bookmarked', icon: '★' },
+    { name: 'Explore', href: '/dashboard', icon: '◈' },
+    { name: 'My Posts', href: '/dashboard/my-feeds', icon: '⊞' },
+    { name: 'Saved', href: '/dashboard/bookmarked', icon: '★' },
     { name: 'Chats', href: '/dashboard/chats', icon: '▣' },
     { name: 'Recent Tips', href: '/dashboard/tips', icon: '✧' },
     { name: 'Settings', href: '/dashboard/settings', icon: '⚙' },

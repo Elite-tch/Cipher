@@ -9,6 +9,8 @@ export interface CipherIdentity {
   peerId: string;            // Standard multihash PeerID (12D3K...)
   signingPublicKey: string;  // Public component for signatures
   signingPrivateKey: string; // Private component for signatures
+  publicKey: string;         // Alias for signingPublicKey
+  privateKey: string;        // Alias for signingPrivateKey
 
   // 2. Execution Layer (Logos LEZ / ZK Primitives)
   vpk: string;               // Viewing Public Key (for decrypting private state)
@@ -83,6 +85,8 @@ export async function generateIdentity(providedMnemonic?: string): Promise<Ciphe
     peerId,
     signingPublicKey: publicKeyHex,
     signingPrivateKey: privateKeyHex,
+    publicKey: publicKeyHex,
+    privateKey: privateKeyHex,
     vpk,
     vsk,
     npk,
@@ -123,7 +127,7 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
   return crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
-      salt: salt,
+      salt: new Uint8Array(salt),
       iterations: 100000,
       hash: 'SHA-256'
     },

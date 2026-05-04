@@ -1,18 +1,20 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   PlusIcon,
   RotateCwIcon,
   ImageIcon,
-  GiftIcon
+  GiftIcon,
+  SendIcon
 } from 'lucide-react';
 import { useCipherID } from '@/hooks/useCipherID';
 import { LogosExecutionZone } from '@/lib/logos-ez';
 import { WakuPost, broadcastPost, fetchWakuTips, subscribeToFeed, subscribeToTips, initWaku, broadcastTip } from '@/lib/waku';
 import PostCard from '@/components/PostCard';
 import { toast } from 'sonner';
+import { getCodexUrl, isCodexCid } from '@/lib/codex';
 
 export default function MyFeeds() {
   const { identity } = useCipherID();
@@ -21,7 +23,8 @@ export default function MyFeeds() {
   const [showComposer, setShowComposer] = useState(false);
   const [newPostContent, setNewPostContent] = useState('');
   const [selectedImages, setSelectedImages] = useState<string[]>([]);
-  const [uploadingImages, setUploadingImages] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // States for PostCard interactions
   const [allTips, setAllTips] = useState<any[]>([]);
@@ -90,14 +93,16 @@ export default function MyFeeds() {
     const interval = setInterval(async () => {
       if (!isMounted || !identity) return;
       try {
-        const [allGlobalPosts, ledgerTips, wakuTips] = await Promise.all([
+        const [allGlobalPosts, ledgerTips, wakuTips, remoteBookmarks] = await Promise.all([
           LogosExecutionZone.getGlobalPosts(),
           LogosExecutionZone.getGlobalTips(),
-          fetchWakuTips()
+          fetchWakuTips(),
+          LogosExecutionZone.getMetadata(identity.npk, 'bookmarks')
         ]);
 
         const myPosts = allGlobalPosts.filter((p: any) => p.authorNpk === identity.npk);
         setPosts(myPosts);
+        if (remoteBookmarks && isMounted) setBookmarks(remoteBookmarks);
 
         setAllTips(prev => {
           const mergedMap = new Map();
@@ -118,6 +123,46 @@ export default function MyFeeds() {
       unsubTipsPromise.then(unsub => unsub?.());
     };
   }, [identity]);
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    const remaining = 4 - selectedImages.length;
+    if (remaining <= 0) return toast.error('Maximum 4 images per post.');
+
+    const toUpload = files.slice(0, remaining);
+    setIsUploading(true);
+    const toastId = toast.loading(`Uploading ${toUpload.length} image(s) to Codex...`);
+
+    try {
+      const cids = await Promise.all(
+        toUpload.map(file => new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = async () => {
+            try {
+              const { uploadToCodex } = await import('@/lib/codex');
+              const cid = await uploadToCodex(reader.result as string);
+              resolve(cid);
+            } catch (err) { reject(err); }
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        }))
+      );
+      setSelectedImages(prev => [...prev, ...cids].slice(0, 4));
+      toast.success('Images uploaded to Codex', { id: toastId });
+    } catch (err) {
+      toast.error('Upload failed', { id: toastId });
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const removeImage = (idx: number) => {
+    setSelectedImages(prev => prev.filter((_, i) => i !== idx));
+  };
 
   const handleCreatePost = async () => {
     if (!identity) return toast.error('Identity not connected');
@@ -160,6 +205,8 @@ export default function MyFeeds() {
       postId: post.id,
       sender: identity.npk,
       recipient: recipientAccount,
+      senderAlias: identity.alias,
+      recipientAlias: post.authorAlias,
       amount: amount.toString(),
       timestamp: Date.now(),
     };
@@ -177,7 +224,6 @@ export default function MyFeeds() {
   };
 
   const handleDelete = async (postId: string) => {
-    if (!confirm('Delete this transmission?')) return;
     try {
       await LogosExecutionZone.deleteGlobalPost(postId);
       setPosts(prev => prev.filter(p => p.id !== postId));
@@ -187,15 +233,67 @@ export default function MyFeeds() {
     }
   };
 
+  const handleBookmark = async (post: WakuPost) => {
+    if (!identity) return;
+    const isBookmarked = bookmarks.includes(post.id);
+    const updated = isBookmarked
+      ? bookmarks.filter(id => id !== post.id)
+      : [...bookmarks, post.id];
+
+    setBookmarks(updated);
+    await LogosExecutionZone.saveMetadata(identity.npk, 'bookmarks', updated);
+    await LogosExecutionZone.updateGlobalBookmarkCount(post.id, !isBookmarked);
+
+    if (isBookmarked) {
+      toast('Removed from Bookmarks');
+    } else {
+      toast.success('Added to Bookmarks');
+    }
+  };
+
   const handleEdit = async (postId: string, content: string) => {
     try {
       await LogosExecutionZone.editGlobalPost(postId, content);
-      setPosts(prev => prev.map(p => p.id === postId ? { ...p, content, isEdited: true } : p));
-      toast.success('Updated');
+      setPosts(prev => prev.map(p => p.id === postId ? { 
+        ...p, 
+        content, 
+        isEdited: true 
+      } : p));
+      toast.success('Post updated');
     } catch (e) {
-      toast.error('Update failed');
+      toast.error('Failed to update');
     }
   };
+
+  const handleCreateComment = async (parentId: string) => {
+    if (!identity) return toast.error('Connect ID first');
+    const content = commentContents[parentId];
+    if (!content?.trim()) return;
+
+    const newComment: WakuPost = {
+      id: Math.random().toString(36).substring(7) + Date.now(),
+      author: identity.peerId,
+      authorNpk: identity.npk,
+      authorAlias: identity.alias,
+      content: content,
+      timestamp: Date.now(),
+      tips: 0,
+      keyPrice: 0.01,
+      parentId: parentId
+    };
+
+    try {
+      await LogosExecutionZone.saveGlobalPost(newComment);
+      await broadcastPost(newComment);
+      setPosts(prev => [newComment, ...prev]);
+      setCommentContents(prev => ({ ...prev, [parentId]: '' }));
+      toast.success('Reply Published');
+    } catch (e) {
+      toast.error('Reply failed');
+    }
+  };
+
+  const rootPosts = posts.filter(p => !p.parentId);
 
   return (
     <div className="space-y-6">
@@ -213,20 +311,12 @@ export default function MyFeeds() {
 
       <div className='flex justify-end'>
         {/* Toggle Button */}
-        {!showComposer && (
-          <button
-            onClick={() => setShowComposer(true)}
-            className="w-fit py-3 bg-primary glass-card border-dashed border-white/10 hover:border-primary/40 flex items-center justify-center gap- group transition-all"
-          >
-            <div className="h-6 w-6 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-white group-hover:scale-110 transition-transform">
-              <PlusIcon className="w-6 h-6" />
-            </div>
-            <span className="text-xs font-bold text-white uppercase tracking-[0.3em]">Create Feeds</span>
-          </button>
-        )}
+        
+        <button onClick={() => setShowComposer(true)} className="px-5 py-2 rounded-xl gradient-primary text-white text-[10px] font-bold tracking-widest hover:scale-105 transition-all shadow-lg shadow-primary/20 flex items-center gap-2">
+          <PlusIcon className="w-3 h-3" /> CREATE POST
+        </button>
       </div>
 
-      {/* Composer */}
       {showComposer && (
         <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} className="glass-card p-6 space-y-4 border-primary/20 relative">
           <button onClick={() => setShowComposer(false)} className="absolute top-4 right-4 text-white/20 hover:text-white">✕</button>
@@ -237,19 +327,64 @@ export default function MyFeeds() {
             <textarea
               value={newPostContent}
               onChange={(e) => setNewPostContent(e.target.value)}
-              placeholder="What's happening in your sovereign space?"
+              placeholder="What's happening?"
               className="flex-1 bg-transparent border-none outline-none text-white placeholder:text-white/20 resize-none min-h-[100px] text-sm py-2"
             />
           </div>
-          <div className="flex justify-end pt-2 border-t border-white/5">
-            <button onClick={handleCreatePost} className="px-6 py-2 rounded-full gradient-primary text-white text-[10px] font-bold tracking-widest hover:scale-105 shadow-lg">PUBLISH</button>
+          
+          {/* Image Previews */}
+          {selectedImages.length > 0 && (
+            <div className="grid grid-cols-4 gap-2 ml-14">
+              {selectedImages.map((img, idx) => (
+                <div key={idx} className="relative aspect-square rounded-lg overflow-hidden border border-white/10">
+                  <img 
+                    src={isCodexCid(img) ? getCodexUrl(img) : img} 
+                    className="w-full h-full object-cover" 
+                    alt="Preview" 
+                  />
+                  <button 
+                    onClick={() => removeImage(idx)}
+                    className="absolute top-1 right-1 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center text-white hover:bg-red-500 transition-colors text-[10px]"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex justify-between items-center pt-2 border-t border-white/5 ml-14">
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+                className="p-2 rounded-xl  border border-white/10 text-white hover:text-primary hover:border-primary/40 transition-all flex items-center gap-2"
+              >
+                <ImageIcon className="w-6 h-6" />
+                   </button>
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleImageUpload} 
+                className="hidden" 
+                accept="image/*" 
+                multiple 
+              />
+            </div>
+            <button 
+              onClick={handleCreatePost} 
+              disabled={(!newPostContent.trim() && selectedImages.length === 0) || isUploading}
+              className="px-6 py-2 rounded-full gradient-primary text-white text-[10px] font-bold tracking-widest hover:scale-105 shadow-lg disabled:opacity-50"
+            >
+              {isUploading ? 'UPLOADING...' : 'POST'}
+            </button>
           </div>
         </motion.div>
       )}
 
       {/* List */}
       <AnimatePresence mode="popLayout">
-        {posts.map(post => (
+        {rootPosts.map(post => (
           <PostCard
             key={post.id}
             post={post}
@@ -263,11 +398,11 @@ export default function MyFeeds() {
             tippingId={null}
             onTip={handleTip}
             onMessageAuthor={() => { }}
-            onBookmark={() => { }}
+            onBookmark={handleBookmark}
             onShare={() => { }}
             onToggleComments={(id) => setActiveCommentPost(activeCommentPost === id ? null : id)}
             onCommentChange={(id, val) => setCommentContents(prev => ({ ...prev, [id]: val }))}
-            onCommentSubmit={() => { }}
+            onCommentSubmit={handleCreateComment}
             onImageClick={() => { }}
             onBuyKey={() => { }}
             onDelete={handleDelete}
@@ -279,7 +414,7 @@ export default function MyFeeds() {
 
       {posts.length === 0 && wakuStatus === 'ready' && (
         <div className="text-center py-20 border-2 border-dashed border-white/5 rounded-3xl">
-          <p className="text-white/20 font-mono text-[10px] uppercase tracking-widest">No transmissions found in your sovereign ledger.</p>
+          <p className="text-white/20 font-mono text-[10px] uppercase tracking-widest">You haven't shared any posts yet.</p>
         </div>
       )}
     </div>

@@ -207,6 +207,23 @@ export const LogosExecutionZone = {
   },
 
   /**
+   * GLOBAL FEED: Updates the bookmark count for a post on the global ledger.
+   */
+  async updateGlobalBookmarkCount(postId: string, increment: boolean): Promise<boolean> {
+    const GLOBAL_FEED_ID = 'logos_global_feed';
+    const state = await this._getState(GLOBAL_FEED_ID);
+    const existingPosts = state.posts || [];
+    const updated = existingPosts.map((p: any) => {
+      if (p.id === postId) {
+        const currentCount = p.bookmarkCount || 0;
+        return { ...p, bookmarkCount: Math.max(0, increment ? currentCount + 1 : currentCount - 1) };
+      }
+      return p;
+    });
+    return this.saveMetadata(GLOBAL_FEED_ID, 'posts', updated);
+  },
+
+  /**
    * GLOBAL TIPS: Saves a tip message to the shared ledger.
    */
   async saveGlobalTip(tip: any): Promise<boolean> {

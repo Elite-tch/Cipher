@@ -80,6 +80,8 @@ export interface WakuPost {
     remainingClaims: number;
     claims: string[];
   };
+  isEdited?: boolean;
+  bookmarkCount?: number;
 }
 
 export interface WakuTip {
@@ -118,7 +120,7 @@ export async function initWaku(): Promise<LightNode> {
       networkConfig: {
         clusterId: LOGOS_NETWORK_CONFIG.clusterId,
         shards: LOGOS_NETWORK_CONFIG.shards,
-      },
+      } as any,
       // AnonComms / Mixnet Privacy Hardening
       // We hide websocket info and generic user agents to prevent fingerprinting
       // and metadata leakage prior to full AnonComms Mixnet integration.
