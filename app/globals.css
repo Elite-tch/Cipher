@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+@theme {
+  /* Brand Colors */
+  --color-background: #050505; /* Midnight Obsidian */
+  --color-primary: #7C3AED;    /* Cipher Violet */
+  --color-secondary: #00F5FF;  /* Logos Cyan */
+  --color-success: #10B981;    /* Emerald Flow */
+  --color-surface: #121212;    /* Glass Obsidian */
+  --color-foreground: #F9FAFB;
+
+  /* Font Families */
+  --font-heading: var(--font-outfit), ui-sans-serif, system-ui;
+  --font-body: var(--font-inter), ui-sans-serif, system-ui;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular;
+
+  /* Custom Animations */
+  --animate-pulse-slow: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-kinetic: kinetic 2s ease-in-out infinite;
+}
+
+@keyframes kinetic {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+/* Base Styles */
+@layer base {
+  :root {
+    --background: #050505;
+    --foreground: #F9FAFB;
+    --primary: #7C3AED;
+    --secondary: #00F5FF;
+    --success: #10B981;
+    --surface: #121212;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-body);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+  }
+
+  code, pre {
+    font-family: var(--font-mono);
+  }
+
+  button, a {
+    cursor: pointer;
+  }
+
+  ::selection {
+    background-color: rgba(124, 58, 237, 0.4);
+    color: white;
+  }
+}
+
+/* Custom Utilities */
+@utility glass {
+  background: rgba(18, 18, 18, 0.7);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+@utility glass-card {
+  @apply glass rounded-2xl p-4 transition-all duration-300 hover:border-primary/30;
+}
+
+@utility gradient-primary {
+  background: linear-gradient(135deg, #7C3AED 0%, #00F5FF 100%);
+}
+
+@utility gradient-text {
+  @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-secondary;
+}
+
+@utility selection-primary {
+  @apply selection:bg-primary/30 selection:text-white;
+}
+
+/* Scrollbar Hiding */
+.no-scrollbar {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+/* Hide number input spinners */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none !important;
+  margin: 0 !important;
+}
+input[type='number'] {
+  -moz-appearance: textfield !important;
+}
